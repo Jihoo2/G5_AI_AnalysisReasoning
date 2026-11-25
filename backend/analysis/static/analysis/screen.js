@@ -92,13 +92,13 @@ byId("start").onclick = async () => {
 
     if (!response.ok) throw new Error();
 
-    const { confidence } = await response.json();
-    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    const { verdict } = await response.json();
+    if (verdict !== "OK" && verdict !== "NG") {
       throw new Error();
     }
     if (request.signal.aborted) return;
 
-    results.dataset.verdict = confidence >= 0.8 ? "OK" : "NG";
+    results.dataset.verdict = verdict;
     message.textContent = "";
   } catch {
     if (!request.signal.aborted) {
