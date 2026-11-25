@@ -1,0 +1,18 @@
+# 비밀 설정
+.env
+# 가상환경 · 캐시
+.venv/
+__pycache__/
+*.pyc
+# Django
+backend/media/
+staticfiles/
+db.sqlite3
+# 영상 · 모델 (용량 큼)
+*.mp4
+*.mov
+*.pt
+*.joblib
+# 편집기
+.vscode/
+.idea/
