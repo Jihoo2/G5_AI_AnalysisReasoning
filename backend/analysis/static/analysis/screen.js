@@ -79,7 +79,7 @@ byId("start").onclick = async () => {
   data.append("video", file.files[0]);
   message.textContent = "분석 중입니다.";
 
-  try {
+    try {
     const response = await fetch(results.dataset.api, {
       method: "POST",
       mode: "same-origin",
@@ -92,13 +92,12 @@ byId("start").onclick = async () => {
 
     if (!response.ok) throw new Error();
 
-    const { verdict } = await response.json();   // Django 가 { id, status, verdict } 를 돌려줌
-    if (verdict !== "OK" && verdict !== "NG") {
-      throw new Error();                         // 판정 없음 → "분석 결과를 받지 못했습니다"
-    }
+    // Django 가 { id, status, verdict } 를 돌려줌 — 판정은 FastAPI, JS 는 표시만
+    const { verdict } = await response.json();
+    if (verdict !== "OK" && verdict !== "NG") throw new Error();
     if (request.signal.aborted) return;
 
-    results.dataset.verdict = verdict;           // 받은 값 그대로 표시
+    results.dataset.verdict = verdict;
     message.textContent = "";
   } catch {
     if (!request.signal.aborted) {
