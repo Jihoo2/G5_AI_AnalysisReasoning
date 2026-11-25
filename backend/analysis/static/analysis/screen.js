@@ -92,13 +92,13 @@ byId("start").onclick = async () => {
 
     if (!response.ok) throw new Error();
 
-    const { verdict } = await response.json();
+    const { verdict } = await response.json();   // Django 가 { id, status, verdict } 를 돌려줌
     if (verdict !== "OK" && verdict !== "NG") {
-      throw new Error();
+      throw new Error();                         // 판정 없음 → "분석 결과를 받지 못했습니다"
     }
     if (request.signal.aborted) return;
 
-    results.dataset.verdict = verdict;
+    results.dataset.verdict = verdict;           // 받은 값 그대로 표시
     message.textContent = "";
   } catch {
     if (!request.signal.aborted) {
