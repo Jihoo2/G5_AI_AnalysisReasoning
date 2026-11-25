@@ -1,8 +1,0 @@
-fastapi>=0.115
-uvicorn[standard]>=0.30
-python-multipart>=0.0.9   # 파일 업로드(multipart) 받기
-opencv-python-headless>=4.9
-ultralytics>=8.2          # YOLO Pose
-lap>=0.5.12               # ByteTrack 추적에 필요
-numpy>=1.26
-pytest>=8.0               # 판정 로직 테스트
