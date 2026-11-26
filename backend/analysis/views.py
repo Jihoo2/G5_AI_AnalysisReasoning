@@ -1,5 +1,5 @@
 import requests
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
@@ -39,4 +39,16 @@ def analyze(request):
         record.status = "FAILED"
     record.save()
 
-    return Response({"id": record.id, "status": record.status, "verdict": record.verdict})
+    return Response(_result(record))                       # ★ 응답 모양을 _result() 한 곳에서
+
+
+@api_view(["GET"])
+def result(request, pk):
+    """STEP 9 — 기록 id 로 DB 에 저장된 결과를 조회한다. 없는 id 면 404."""
+    record = get_object_or_404(InferenceRecord, pk=pk)
+    return Response(_result(record))
+
+
+def _result(record):
+    """POST(분석)와 GET(조회)이 같은 모양으로 돌려주는 결과 — 한 곳에서만 정의"""
+    return {"id": record.id, "status": record.status, "verdict": record.verdict}
