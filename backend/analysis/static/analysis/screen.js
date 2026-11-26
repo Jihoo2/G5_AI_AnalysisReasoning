@@ -1,107 +1,132 @@
-const byId = (id) => document.getElementById(id);
+// 1. 화면 요소와 상태
+const uploadTab = document.getElementById("uploadTab");
+const cameraTab = document.getElementById("cameraTab");
+const videoFile = document.getElementById("videoFile");
+const video = document.getElementById("videoPreview");
+const camera = document.getElementById("cameraPreview");
+const cameraForm = document.getElementById("cameraForm");
+const cameraUrl = document.getElementById("cameraUrl");
+const cameraStatus = document.getElementById("cameraStatus");
 
-const video = byId("preview");
-const file = byId("file");
-const address = byId("address");
-const message = byId("message");
-const uploadTab = byId("uploadTab");
-const cameraTab = byId("cameraTab");
-
-let previewUrl = "";
+const start = document.getElementById("start");
+const action = document.getElementById("action");
 const results = document.querySelector(".results");
-let analysisRequest;
+const analysisStatus = document.getElementById("analysisStatus");
+const csrfToken = document.querySelector("[name=csrfmiddlewaretoken]").value;
 
-// 선택한 영상 파일을 왼쪽 미리보기에 표시합니다.
-function refreshPreview() {
-  analysisRequest?.abort();
+let fileUrl = "";
+let activeRequest = null;
+
+
+// 2. 기능별 함수
+
+function resetAnalysis() {
+  activeRequest?.abort();
+  activeRequest = null;
+
   delete results.dataset.verdict;
-  video.removeAttribute("src");
-  video.controls = false;
-
-  if (previewUrl) {
-    URL.revokeObjectURL(previewUrl);
-    previewUrl = "";
-  }
-
-  if (!file.hidden && file.files.length > 0) {
-    previewUrl = URL.createObjectURL(file.files[0]);
-    video.src = previewUrl;
-    video.controls = true;
-  }
-
-  video.load();
-  message.textContent = "";
+  analysisStatus.textContent = "";
+  start.disabled = videoFile.hidden || !videoFile.files.length;
 }
 
-// 선택한 탭에 맞춰 파일 선택 칸 또는 카메라 주소 칸을 표시합니다.
-function selectSource(useCamera) {
-  file.hidden = useCamera;
-  address.hidden = !useCamera;
+function switchTab(event) {
+  const useCamera = event.currentTarget === cameraTab;
+  if (useCamera === videoFile.hidden) return;
 
   uploadTab.setAttribute("aria-pressed", String(!useCamera));
   cameraTab.setAttribute("aria-pressed", String(useCamera));
+  videoFile.hidden = useCamera;
+  video.hidden = useCamera;
+  cameraForm.hidden = !useCamera;
 
-  refreshPreview();
+  video.pause();
+  camera.hidden = true;
+  camera.removeAttribute("src");
+  cameraStatus.textContent = "";
+  resetAnalysis();
 }
 
-uploadTab.onclick = () => selectSource(false);
-cameraTab.onclick = () => selectSource(true);
-file.onchange = refreshPreview;
+function previewFile() {
+  const [file] = videoFile.files;
 
-video.onerror = () => {
-  message.textContent = "이 브라우저에서 재생할 수 없는 영상입니다.";
-};
+  if (fileUrl) URL.revokeObjectURL(fileUrl);
+  fileUrl = file ? URL.createObjectURL(file) : "";
 
-byId("start").onclick = async () => {
-  analysisRequest?.abort();
-  delete results.dataset.verdict;
-
-  if (file.hidden) {
-    message.textContent = "영상 업로드 탭에서 분석할 영상을 선택해 주세요.";
-    return;
+  if (fileUrl) {
+    video.src = fileUrl;
+  } else {
+    video.removeAttribute("src");
+    video.load();
   }
 
-  if (!file.files.length) {
-    message.textContent = "분석할 영상을 선택해 주세요.";
-    file.focus();
-    return;
-  }
+  resetAnalysis();
+}
 
-  if (!results.dataset.api) {
-    message.textContent = "분석 서버 연결 전입니다.";
-    return;
-  }
+function connectCamera(event) {
+  event.preventDefault();
+  cameraStatus.textContent = "";
+  camera.hidden = false;
+  camera.src = cameraUrl.value.trim();
+}
+
+function showCameraError() {
+  if (!camera.hasAttribute("src")) return;
+
+  camera.hidden = true;
+  cameraStatus.textContent = "영상을 열 수 없습니다. 카메라 영상 주소를 확인해 주세요.";
+}
+
+async function startInference() {
+  const [file] = videoFile.files;
+  if (!file || videoFile.hidden || activeRequest) return;
 
   const request = new AbortController();
-  analysisRequest = request;
+  activeRequest = request;
+  start.disabled = true;
+  delete results.dataset.verdict;
+  analysisStatus.textContent = "분석 중입니다.";
 
   const data = new FormData();
-  data.append("video", file.files[0]);
-  message.textContent = "분석 중입니다.";
+  data.append("video", file);
+  data.append("action", action.value);
 
-    try {
+  try {
     const response = await fetch(results.dataset.api, {
       method: "POST",
       mode: "same-origin",
+      headers: { "X-CSRFToken": csrfToken },
       body: data,
-      signal: request.signal,
-      headers: {
-        "X-CSRFToken": document.querySelector("[name=csrfmiddlewaretoken]").value
-      }
+      signal: request.signal
     });
 
     if (!response.ok) throw new Error();
 
-    // Django 가 { id, status, verdict } 를 돌려줌 — 판정은 FastAPI, JS 는 표시만
-    const { verdict } = await response.json();
-    if (verdict !== "OK" && verdict !== "NG") throw new Error();
-    if (request.signal.aborted) return;
+    const { status, verdict } = await response.json();
+    if (status !== "DONE" || !["OK", "NG"].includes(verdict)) {
+      throw new Error();
+    }
 
+    if (request.signal.aborted) return;
     results.dataset.verdict = verdict;
-    message.textContent = "";
+    analysisStatus.textContent = `분석 결과: ${verdict}`;
   } catch {
     if (!request.signal.aborted) {
-      message.textContent = "분석 결과를 받지 못했습니다.";
+      analysisStatus.textContent = "분석에 실패했습니다. 서버 상태와 선택한 동작을 확인해 주세요.";
+    }
+  } finally {
+    if (activeRequest === request) {
+      activeRequest = null;
+      start.disabled = false;
     }
   }
-};
+}
+
+
+// 3. 이벤트 연결
+uploadTab.onclick = switchTab;
+cameraTab.onclick = switchTab;
+videoFile.onchange = previewFile;
+cameraForm.onsubmit = connectCamera;
+camera.onerror = showCameraError;
+action.onchange = resetAnalysis;
+start.onclick = startInference;
