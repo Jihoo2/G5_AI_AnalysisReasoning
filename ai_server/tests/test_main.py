@@ -91,11 +91,19 @@ def test_predict_judge_summary(dummy_model):
     assert main.judge(pred, None)["verdict"] is None
     other = next(c for c in CLASSES if c != pred["action_label"])
     assert main.judge(pred, other)["verdict"] == "NG"
+    assert main.judge({**pred, "is_uncertain": True}, pred["action_label"])["verdict"] == "OK"  # 일치하면 OK
     sure = {**pred, "is_uncertain": False, "confidence": 0.9}
-    assert main.judge(sure, pred["action_label"])["verdict"] == "OK"
 
     s = main.build_summary([{"track_id": 1, **sure, **main.judge(sure, sure["action_label"])}], "1명")
     assert s["verdict"] == "OK" and s["confidence_percent"] == 90 and s["display_text"].startswith("OK · ")
+
+
+def test_label_from_filename():
+    assert main.label_from_filename("S01_A001_T01.mp4") == "bend_return"
+    assert main.label_from_filename("data/S02_A006_T03.mp4") == "wave"
+    assert main.label_from_filename("s01_a005_t01.MP4") == "sit_stand"
+    assert main.label_from_filename("test_wave.mp4") is None
+    assert main.label_from_filename("S01_A009_T01.mp4") is None
 
 
 def test_summary_picks_longest_person_and_empty():

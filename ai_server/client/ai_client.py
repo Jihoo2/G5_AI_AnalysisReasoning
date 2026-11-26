@@ -39,18 +39,20 @@ PERSON_FIELDS = ("track_id", "action_label", "action_name", "confidence",
 
 
 def _fail(message: str, raw: dict | None = None) -> dict:
-    return {"ok": False, "job_status": "FAILED", "error_message": message,
+    return {"ok": False, "job_status": "FAILED", "error_message": message, "verdict": None,
             "summary": None, "people": [], "processing_time_ms": None, "raw": raw}
 
 
 def analyze_video(video_path: str | Path, expected_action: str | None = None) -> dict:
     """
     영상 파일을 AI 서버에 보내고, DB에 바로 저장할 수 있는 모양으로 돌려줍니다.
+    정답 동작: expected_action 을 주거나, 파일 이름에 A001~A006 이 들어 있어야 합니다.
 
     반환값
       ok                 True = 분석 완료(사람이 없어도 완료), False = 실패
       job_status         "COMPLETED" 또는 "FAILED" — AnalysisJob.status 에 그대로
       error_message      실패 이유 (사용자에게 보여줄 문장)
+      verdict            "OK" (인식 = 정답) / "NG" (다름)
       summary            대표 1명 결과: action_name, confidence_percent, verdict, display_text ...
       people             사람별 결과 목록 — PersonPrediction 한 줄씩
       processing_time_ms AI 처리 시간
@@ -62,7 +64,7 @@ def analyze_video(video_path: str | Path, expected_action: str | None = None) ->
     try:
         with path.open("rb") as f:
             res = requests.post(url, files={"file": (path.name, f, "video/mp4")},
-                                data=data, timeout=AI_REQUEST_TIMEOUT)
+                                data=data, params={"detail": "true"}, timeout=AI_REQUEST_TIMEOUT)
     except FileNotFoundError:
         return _fail(f"분석할 영상 파일을 찾을 수 없습니다: {path.name}")
     except requests.Timeout:
@@ -85,6 +87,7 @@ def analyze_video(video_path: str | Path, expected_action: str | None = None) ->
         "ok": True,
         "job_status": "COMPLETED",
         "error_message": "",
+        "verdict": body.get("verdict"),          # "OK" / "NG"
         "summary": body.get("summary"),
         "people": [{k: r.get(k) for k in PERSON_FIELDS} for r in body.get("results", [])],
         "processing_time_ms": body.get("processing_time_ms"),

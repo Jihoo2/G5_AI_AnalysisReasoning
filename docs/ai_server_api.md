@@ -27,7 +27,7 @@ ai_server/
 cd ai_server
 uv venv .venv && source .venv/bin/activate
 uv pip install -r requirements.txt
-python -m pytest tests -q           # 10 passed
+python -m pytest tests -q           # 11 passed
 uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```
 - 상태: http://localhost:8001/health (`rf_model_ready`, `pose_model_ready` 둘 다 true)
@@ -35,12 +35,31 @@ uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 
 ## API
 
-`POST /predict/video` (multipart/form-data)
-- `file` (필수): mp4·avi·mov·mkv·webm, 최대 100MB
-- `expected_action` (선택): 하려던 동작 — 주면 OK/NG 판정
+**응답은 기본적으로 `OK` 또는 `NG` 두 글자만** 돌려줍니다.
+- 정답 동작은 **파일 이름**에서 읽어요: `S01_A001_T01.mp4` → `A001` → `bend_return`
+- AI가 인식한 동작 = 정답 → `OK`, 다르면 `NG` (사람을 못 찾는 등 판단 불가도 `NG`)
+- `?detail=true`를 붙이면 아래 상세 JSON을 돌려줘요 (확인용·백엔드용)
+
+| 파일 이름 ID | 정답 동작 |
+|---|---|
+| A001 | `bend_return` 허리 굽혔다 펴기 |
+| A002 | `leg_raise_lower` 한쪽 다리 들었다 내리기 |
+| A003 | `walk_turn_walk` 걷다가 방향 바꾸기 |
+| A004 | `drink_return` 음료 마시기 |
+| A005 | `sit_stand` 앉았다 일어나기 |
+| A006 | `wave` 손 흔들기 |
+
+| API | 하는 일 |
+|---|---|
+| `POST /predict/video` | 영상 업로드 → `OK`/`NG` (`expected_action`을 주면 파일 이름 대신 그 값을 정답으로) |
+| `GET /data` | `ai_server/data/` 폴더의 영상 목록 |
+| `GET /predict/file/{파일명}` | `data/` 폴더 영상을 이름으로 분석 → `OK`/`NG`. 예: `/predict/file/S01_A001_T01.mp4` |
+
+상세 JSON (`?detail=true`):
 
 ```json
 {
+  "verdict": "OK",
   "status": "OK",
   "message": "1명의 동작을 분석했습니다.",
   "expected_action": "wave",
@@ -72,6 +91,8 @@ uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 | 용량 초과 | 413 | `FILE_TOO_LARGE` |
 | 형식 오류 | 415 | `UNSUPPORTED_FORMAT` |
 | 모르는 동작 | 422 | `UNKNOWN_ACTION` |
+| 파일 이름에 A001~A006 없음 | 422 | `NO_LABEL_IN_FILENAME` |
+| data 폴더에 파일 없음 | 404 | `FILE_NOT_FOUND` |
 | 모델 없음 | 503 | `MODEL_NOT_READY` |
 
 `GET /actions`: 인식 가능한 동작(영문·한글)과 판정 기준
@@ -103,7 +124,7 @@ job.save()
 2. 프레임마다 38개: 정규화 좌표 34 + 팔꿈치·무릎 각도 4 (`rf_feature_columns.json`과 순서 일치를 테스트로 확인)
 3. 5초 Window를 0.25초씩 밀며(`day07`) 30 Step으로 보간 → 1,140개
 4. Random Forest 확률을 Window마다 구해 평균 → 동작 + 신뢰도 (0.55 미만은 불확실)
-5. `expected_action`과 같고 불확실하지 않으면 **OK**, 아니면 **NG**
+5. 파일 이름의 정답(또는 `expected_action`)과 같으면 **OK**, 다르면 **NG**
 
 ## ⚠️ 팀 확인 필요 (모두 main.py 안)
 
@@ -112,5 +133,5 @@ job.save()
 | 좌표 정규화 | 엉덩이 중심 기준, 몸통 길이로 나눔 | `normalize_keypoints()` — 학습 코드 `feature_utils.py`와 같게 |
 | 각도 단위 | 도(0~180) | `frame_features()` |
 | 가려진 관절 값 | 0으로 채움 | `flatten()` |
-| OK/NG 기준 | 하려던 동작 = 인식 동작, 신뢰도 ≥ 0.55 | `judge()` |
+| OK/NG 기준 | 정답(파일 이름) = 인식 동작이면 OK (신뢰도는 따지지 않음) | `judge()` |
 | scikit-learn 버전 | 1.4 이상 | `requirements.txt` — 팀장 학습 버전과 맞추기 |

@@ -4,7 +4,8 @@ G5 AI 서버 (FastAPI) — 이 파일 하나로 동작합니다.
   실행: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
   문서: http://localhost:8001/docs
 
-하는 일: 영상 → 사람별 관절(YOLO Pose) → 숫자 1,140개 → Random Forest → 동작 + 신뢰도 → OK/NG
+하는 일: 영상 → 관절(YOLO Pose) → 숫자 1,140개 → Random Forest → 인식 동작
+         파일 이름의 정답(S01_A001_T01.mp4 → A001)과 같으면 "OK", 다르면 "NG" 만 응답
 하지 않는 일: DB 저장·회원·화면 (Django backend/ 담당)
 
 파일 구성 (위에서 아래로 읽으면 처리 순서와 같습니다)
@@ -13,12 +14,13 @@ G5 AI 서버 (FastAPI) — 이 파일 하나로 동작합니다.
   3. 모델 로드   Random Forest + json, 서버 시작 때 1번만
   4. Pose       영상 → YOLO Pose + 추적 → 사람별 Feature
   5. 판정       5초 Window 예측·평균 → 동작 → OK/NG → summary
-  6. API        /health, /actions, /predict/video
+  6. API        /health, /actions, /predict/video (업로드), /data, /predict/file/{파일명}
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -30,7 +32,8 @@ from pathlib import Path
 import cv2
 import joblib
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import PlainTextResponse
 
 
 # ════════════════════════════════════════════════════════════
@@ -40,6 +43,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 # ════════════════════════════════════════════════════════════
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = Path(os.getenv("MODELS_DIR", BASE_DIR / "models"))
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))  # 테스트 영상 보관 폴더
 
 
 def _load_json(path: Path) -> dict:
@@ -73,6 +77,16 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 MAX_FRAMES = int(os.getenv("MAX_FRAMES", "1800"))
 DEFAULT_FPS = 30.0
 ALLOWED_EXT = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+
+# 파일 이름의 동작 ID → 모델 라벨.  예) S01_A001_T01.mp4 → A001 → bend_return (정답)
+ACTION_IDS = {
+    "A001": "bend_return",
+    "A002": "leg_raise_lower",
+    "A003": "walk_turn_walk",
+    "A004": "drink_return",
+    "A005": "sit_stand",
+    "A006": "wave",
+}
 
 # 화면 표시용 한글 이름 — 백엔드·화면이 변환표를 따로 만들 필요 없게 응답에 함께 넣음
 ACTION_NAMES_KO = {
@@ -317,17 +331,20 @@ def predict_track(track: Track, fps: float, lm: LoadedModel) -> dict | None:
     }
 
 
+def label_from_filename(filename: str) -> str | None:
+    """파일 이름에서 정답 동작 찾기.  S01_A001_T01.mp4 → 'A001' → 'bend_return'.  없으면 None."""
+    m = re.search(r"A\d{3}", Path(filename).name.upper())
+    return ACTION_IDS.get(m.group(0)) if m else None
+
+
 def judge(pred: dict, expected_action: str | None) -> dict:
-    """OK/NG (임시 규칙 — 팀에서 정해지면 이 함수만 바꾸면 됨)
-    하려던 동작을 AI도 같은 동작으로, 신뢰도 기준 이상으로 인식하면 OK."""
+    """OK/NG 규칙: AI가 인식한 동작 == 정답 동작 → OK, 다르면 NG."""
     if not expected_action:
-        return {"verdict": None, "reason": "판정할 동작(expected_action)이 지정되지 않았습니다."}
+        return {"verdict": None, "reason": "정답 동작을 알 수 없습니다 (파일 이름에 A001~A006 없음)."}
     want = ACTION_NAMES_KO.get(expected_action, expected_action)
     if pred["action_label"] != expected_action:
-        return {"verdict": "NG", "reason": f"'{want}' 대신 '{pred['action_name']}'(으)로 인식됐습니다."}
-    if pred["is_uncertain"]:
-        return {"verdict": "NG", "reason": f"동작은 맞지만 신뢰도 {pred['confidence']:.0%}가 기준 {CONFIDENCE_THRESHOLD:.0%} 미만입니다."}
-    return {"verdict": "OK", "reason": f"'{want}' 동작을 신뢰도 {pred['confidence']:.0%}로 인식했습니다."}
+        return {"verdict": "NG", "reason": f"정답 '{want}' ≠ 인식 '{pred['action_name']}'"}
+    return {"verdict": "OK", "reason": f"정답 '{want}' = 인식 '{pred['action_name']}' (신뢰도 {pred['confidence']:.0%})"}
 
 
 def build_summary(results: list[dict], message: str) -> dict:
@@ -405,43 +422,15 @@ def actions():
     }
 
 
-@app.post("/predict/video", tags=["predictions"])
-def predict_video(
-    file: UploadFile = File(..., description="분석할 영상 (MP4 권장)"),
-    expected_action: str | None = Form(None, description="하려던 동작 (예: wave). 비우면 OK/NG 생략"),
-):
-    """영상 1건 → 사람별 동작 + OK/NG. status: OK / NO_PERSON / TOO_SHORT
-    오류: 400 영상 손상 · 413 용량 · 415 형식 · 422 모르는 동작 · 503 모델 없음"""
-    lm: LoadedModel | None = STATE["rf"]
-    if lm is None or STATE["pose"] is None:
-        raise _error(503, "MODEL_NOT_READY", STATE["rf_error"] or STATE["pose_error"] or "모델이 준비되지 않았습니다.")
-
-    expected = (expected_action or "").strip() or None
-    if expected == "string":  # /docs 화면이 자동으로 채우는 예시값은 '없음'으로
-        expected = None
-    if expected and expected not in lm.classes:
-        raise _error(422, "UNKNOWN_ACTION", f"모르는 동작입니다: {expected} (가능: {', '.join(lm.classes)})")
-
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_EXT:
-        raise _error(415, "UNSUPPORTED_FORMAT", f"지원하지 않는 형식입니다: {ext or '(확장자 없음)'}")
-
+def analyze_file(path: str, expected: str | None) -> dict:
+    """영상 파일 1개 분석 → 상세 결과(JSON). 업로드·data 폴더 두 API가 함께 사용."""
+    lm: LoadedModel = STATE["rf"]
     started = time.perf_counter()
-    fd, tmp = tempfile.mkstemp(suffix=ext)  # OpenCV·YOLO는 파일 경로로 읽으므로 임시 저장
     try:
-        with os.fdopen(fd, "wb") as out:
-            shutil.copyfileobj(file.file, out)
-        size_mb = os.path.getsize(tmp) / (1024 * 1024)
-        if size_mb > MAX_UPLOAD_MB:
-            raise _error(413, "FILE_TOO_LARGE", f"{size_mb:.1f}MB — 최대 {MAX_UPLOAD_MB}MB")
-        try:
-            fps, width, height, frame_count = inspect_video(tmp)
-        except VideoReadError as exc:
-            raise _error(400, "VIDEO_UNREADABLE", str(exc)) from exc
-        tracks, processed = extract_tracks(tmp)
-    finally:
-        file.file.close()
-        Path(tmp).unlink(missing_ok=True)
+        fps, width, height, frame_count = inspect_video(path)
+    except VideoReadError as exc:
+        raise _error(400, "VIDEO_UNREADABLE", str(exc)) from exc
+    tracks, processed = extract_tracks(path)
 
     results = []
     for tid in sorted(tracks):
@@ -455,14 +444,87 @@ def predict_video(
         status, message = "TOO_SHORT", "사람은 찾았지만 판단할 만큼 오래·선명하게 보이지 않았습니다."
     else:
         status, message = "NO_PERSON", "영상에서 사람을 찾지 못했습니다."
+    summary = build_summary(results, message)
 
     return {
+        "verdict": summary["verdict"] or "NG",  # 사람을 못 찾는 등 판단 불가도 NG
         "status": status,
         "message": message,
         "expected_action": expected,
-        "summary": build_summary(results, message),  # 백엔드는 이것만 저장·표시해도 충분
-        "results": results,                          # 사람별 상세 (여러 명일 때)
+        "summary": summary,
+        "results": results,
         "video": {"fps": fps, "width": width, "height": height, "frame_count": frame_count},
         "frames_processed": processed,
         "processing_time_ms": int((time.perf_counter() - started) * 1000),
     }
+
+
+def _respond(result: dict, detail: bool):
+    """기본은 'OK' 또는 'NG' 글자만. detail=true 면 상세 JSON (확인·백엔드용)."""
+    return result if detail else PlainTextResponse(result["verdict"])
+
+
+def _check_ready() -> LoadedModel:
+    lm: LoadedModel | None = STATE["rf"]
+    if lm is None or STATE["pose"] is None:
+        raise _error(503, "MODEL_NOT_READY", STATE["rf_error"] or STATE["pose_error"] or "모델이 준비되지 않았습니다.")
+    return lm
+
+
+def _expected(filename: str, expected_action: str | None, lm: LoadedModel) -> str:
+    """정답 동작: expected_action 이 있으면 그것, 없으면 파일 이름(A001~A006)에서."""
+    value = (expected_action or "").strip()
+    if value and value != "string":  # 'string' = /docs 화면의 예시값
+        if value not in lm.classes:
+            raise _error(422, "UNKNOWN_ACTION", f"모르는 동작입니다: {value} (가능: {', '.join(lm.classes)})")
+        return value
+    label = label_from_filename(filename)
+    if label is None:
+        raise _error(422, "NO_LABEL_IN_FILENAME", f"파일 이름에서 정답 동작(A001~A006)을 찾을 수 없습니다: {filename}")
+    return label
+
+
+@app.post("/predict/video", tags=["predictions"])
+def predict_video(
+    file: UploadFile = File(..., description="영상 (예: S01_A001_T01.mp4 — 이름의 A001이 정답)"),
+    expected_action: str | None = Form(None, description="정답 동작을 직접 줄 때만 (비우면 파일 이름에서 읽음)"),
+    detail: bool = Query(False, description="true면 상세 JSON"),
+):
+    """업로드한 영상 → 'OK'(인식 = 정답) 또는 'NG'(다름)."""
+    lm = _check_ready()
+    name = file.filename or ""
+    expected = _expected(name, expected_action, lm)
+    ext = Path(name).suffix.lower()
+    if ext not in ALLOWED_EXT:
+        raise _error(415, "UNSUPPORTED_FORMAT", f"지원하지 않는 형식입니다: {ext or '(확장자 없음)'}")
+
+    fd, tmp = tempfile.mkstemp(suffix=ext)  # OpenCV·YOLO는 파일 경로로 읽으므로 임시 저장
+    try:
+        with os.fdopen(fd, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+        size_mb = os.path.getsize(tmp) / (1024 * 1024)
+        if size_mb > MAX_UPLOAD_MB:
+            raise _error(413, "FILE_TOO_LARGE", f"{size_mb:.1f}MB — 최대 {MAX_UPLOAD_MB}MB")
+        return _respond(analyze_file(tmp, expected), detail)
+    finally:
+        file.file.close()
+        Path(tmp).unlink(missing_ok=True)
+
+
+@app.get("/data", tags=["data"])
+def list_data():
+    """data/ 폴더에 있는 영상 목록."""
+    files = sorted(p.name for p in DATA_DIR.glob("*") if p.suffix.lower() in ALLOWED_EXT) if DATA_DIR.exists() else []
+    return {"data_dir": str(DATA_DIR), "files": files}
+
+
+@app.get("/predict/file/{filename}", tags=["data"])
+def predict_data_file(filename: str, detail: bool = Query(False, description="true면 상세 JSON")):
+    """data/ 폴더의 영상을 이름으로 분석 → 'OK' 또는 'NG'.  예) /predict/file/S01_A001_T01.mp4"""
+    lm = _check_ready()
+    path = DATA_DIR / Path(filename).name  # 폴더 밖 파일 접근 방지
+    if not path.exists():
+        raise _error(404, "FILE_NOT_FOUND", f"data 폴더에 없는 파일입니다: {path.name}")
+    if path.suffix.lower() not in ALLOWED_EXT:
+        raise _error(415, "UNSUPPORTED_FORMAT", f"지원하지 않는 형식입니다: {path.suffix}")
+    return _respond(analyze_file(str(path), _expected(path.name, None, lm)), detail)
