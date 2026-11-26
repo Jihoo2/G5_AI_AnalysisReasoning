@@ -7,22 +7,45 @@
   <title>AI 분석</title>
 
   <style>
+    :root {
+      color-scheme: dark;
+      --page: #142239;
+      --field: #15243b;
+      --edge: #9aaabe;
+      --text: #f3f4f6;
+      --focus: #c9def8;
+    }
+
     * { box-sizing: border-box; }
-    [hidden] { display: none !important; }
+    [hidden], #analysisStatus:empty { display: none; }
 
     body {
       margin: 0;
-      font: 16px/1.5 "Malgun Gothic", system-ui, sans-serif;
+      background: var(--page);
+      color: var(--text);
+      font: clamp(12px, 1vw, 16px)/1.5 "Malgun Gothic", system-ui, sans-serif;
     }
 
     main {
-      width: 90%;
-      max-width: 1660px;
-      margin: 10vh auto;
+      max-width: 1820px;
+      margin-inline: auto;
+      padding: clamp(24px, 2vw, 40px) min(5.2vw, 94px) 32px min(3.4vw, 62px);
     }
 
-    h1, h2 { margin: 0 0 12px; }
-    button, input, select { font: inherit; }
+    h1, h2 {
+      margin: 0;
+      font-size: clamp(20px, 1.7vw, 30px);
+      line-height: 1.4;
+    }
+
+    h1 { margin-bottom: 8px; }
+    button, input, select { font: inherit; color: inherit; }
+    button:enabled, select { cursor: pointer; }
+
+    :focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
 
     .layout {
       display: grid;
@@ -30,57 +53,86 @@
       gap: 3.2%;
     }
 
-    .preview {
+    .preview-frame {
+      aspect-ratio: 1.89;
+      overflow: hidden;
+      background: #3c5273;
+    }
+
+    .preview:not([hidden]) {
       display: block;
       width: 100%;
-      aspect-ratio: 1.89;
+      height: 100%;
       object-fit: contain;
+    }
+
+    #videoPreview:not([src]) { visibility: hidden; }
+
+    #start, .camera-row button {
+      border: 0;
+      border-radius: 4px;
+      background: #527ba5;
+      font-weight: 700;
     }
 
     #start {
       width: 100%;
-      margin-top: 12px;
-      padding: 13px;
-      font-weight: bold;
+      margin-top: 8px;
+      padding: 0.65em 1em;
     }
+
+    #start:disabled { background: #496e94; }
+    #start:enabled:hover, .camera-row button:hover { background: #6084ac; }
 
     .tabs { display: flex; }
 
     .tabs button {
-      padding: 8px 18px;
-      border: 0;
-      border-bottom: 1px solid;
-      background: none;
-      cursor: pointer;
+      padding: 0.48em 1.15em;
+      border: 1px solid transparent;
+      border-bottom-color: var(--edge);
+      background: transparent;
     }
 
     .tabs button[aria-pressed="true"] {
-      border: 1px solid;
-      border-bottom: 0;
-      border-radius: 5px 5px 0 0;
-      font-weight: bold;
+      border-color: var(--edge);
+      border-bottom-color: transparent;
+      border-radius: 4px 4px 0 0;
+      font-weight: 700;
     }
 
-    input, select {
+    input:not([type="hidden"]), select {
       width: 100%;
       min-width: 0;
-      padding: 8px;
-      border: 1px solid;
-      border-radius: 5px;
+      padding: 0.55em 0.65em;
+      border: 1px solid var(--edge);
+      border-radius: 4px;
+      background: var(--field);
     }
 
+    input::placeholder { color: #b9c5d5; }
     #videoFile, #cameraForm { margin: 8px 0; }
+    #videoFile::file-selector-button {
+      padding: 0 0.4em;
+      border: 0;
+      border-radius: 2px;
+      background: #526276;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
 
     .camera-row {
       display: flex;
       gap: 8px;
+      margin-top: 4px;
     }
 
     .camera-row input { flex: 1; }
+    .camera-row button { padding-inline: 1.2em; }
 
     .fields {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 16px;
     }
@@ -94,31 +146,35 @@
     .results {
       display: flex;
       gap: 8%;
-      padding: 0 5%;
+      margin-top: 24px;
+      padding-inline: 5%;
     }
 
     .results span {
       flex: 1;
-      border: 1px solid;
-      border-radius: 5px;
+      border-radius: 4px;
       text-align: center;
-      font-size: clamp(30px, 3vw, 48px);
-      font-weight: 600;
+      font-size: clamp(30px, 2.65vw, 48px);
+      font-weight: 700;
+    }
+
+    .ng { background: #875561; }
+    .ok { background: #50796f; }
+
+    .results[data-verdict="NG"] .ng,
+    .results[data-verdict="OK"] .ok {
+      outline: 3px solid var(--text);
+      outline-offset: 2px;
     }
 
     @media (max-width: 740px) {
+      body { font-size: 14px; }
+      main { padding: 20px 16px 32px; }
       .layout, .fields { grid-template-columns: 1fr; }
       .layout { gap: 24px; }
+      .tabs button, #start, .camera-row button { min-height: 40px; }
+      .results { gap: 12px; margin-top: 16px; padding: 0; }
     }
-
-    .results[data-verdict="OK"] .ok,
-    .results[data-verdict="NG"] .ng {
-      outline: 3px solid currentColor;
-      }
-
-#analysisStatus:empty {
-  display: none;
-}
   </style>
 </head>
 
@@ -128,14 +184,15 @@
 
     <div class="layout">
       <div>
-        <video id="videoPreview" class="preview"
-               controls playsinline preload="metadata"
-               aria-label="영상 미리보기"></video>
-
-        <img id="cameraPreview" class="preview" alt="IP Webcam 실시간 영상" hidden>
+        <div class="preview-frame">
+          <video id="videoPreview" class="preview"
+                 controls playsinline preload="metadata"
+                 aria-label="영상 미리보기"></video>
+          <img id="cameraPreview" class="preview" alt="IP Webcam 실시간 영상" hidden>
+        </div>
 
         {% csrf_token %}
-        <button type="button" id="start" disabled>AI 추론 시작</button>
+        <button type="button" id="start" disabled>AI 분석 시작</button>
         <p id="analysisStatus" role="status"></p>
       </div>
 
