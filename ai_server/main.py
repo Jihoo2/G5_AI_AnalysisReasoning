@@ -9,7 +9,7 @@ G5 AI 서버 (FastAPI) — 이 파일 하나로 동작합니다.
 하지 않는 일: DB 저장·회원·화면 (Django backend/ 담당)
 
 파일 구성 (위에서 아래로 읽으면 처리 순서와 같습니다)
-  1. 설정       팀장 파일(project.json, configs/, models/)에서 값 읽기
+  1. 설정       팀장 파일(project.json, models/)에서 값 읽기 + 판정 기준값
   2. Feature    관절 좌표 → 프레임당 38개 → 30 Step → 1,140개
   3. 모델 로드   Random Forest + json, 서버 시작 때 1번만
   4. Pose       영상 → YOLO Pose + 추적 → 사람별 Feature
@@ -50,9 +50,7 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-PROJECT = _load_json(BASE_DIR / "project.json")                       # Pose 설정
-REALTIME = _load_json(BASE_DIR / "configs" / "day07_realtime.json")    # Window·신뢰도
-MULTI = _load_json(BASE_DIR / "configs" / "day08_multi_person.json")   # 추적기
+PROJECT = _load_json(BASE_DIR / "project.json")  # Pose 설정
 
 MODEL_FILE = MODELS_DIR / "rf_action_baseline.joblib"
 FEATURE_COLUMNS_FILE = MODELS_DIR / "rf_feature_columns.json"
@@ -63,13 +61,14 @@ IMAGE_SIZE = int(PROJECT.get("image_size", 640))
 PERSON_CONF = float(PROJECT.get("person_confidence", 0.25))
 KEYPOINT_CONF = float(PROJECT.get("keypoint_confidence", 0.5))
 DEVICE = None if PROJECT.get("device", "auto") == "auto" else PROJECT["device"]
-TRACKER = MULTI.get("tracker", "bytetrack.yaml")
+TRACKER = "bytetrack.yaml"         # 사람별 번호(Track ID) 추적기
 
-WINDOW_SECONDS = float(REALTIME.get("window_seconds", 5.0))              # 5초씩 묶어 판단
-WINDOW_STRIDE_SECONDS = float(REALTIME.get("prediction_interval_sec", 0.25))  # 0.25초씩 밀면서
-MIN_WINDOW_FILL_RATIO = float(REALTIME.get("min_window_fill_ratio", 0.8))     # 구간의 80% 이상 보여야
-MIN_VALID_FEATURE_RATIO = float(REALTIME.get("min_valid_feature_ratio", 0.6))  # 숫자의 60% 이상 유효해야
-CONFIDENCE_THRESHOLD = float(REALTIME.get("confidence_threshold", 0.55))      # 이보다 낮으면 '불확실'
+# 판정 기준값 (7일차 실시간 설정과 같은 값 — 바꾸고 싶으면 여기 숫자만 고치면 됨)
+WINDOW_SECONDS = 5.0               # 5초씩 묶어 판단
+WINDOW_STRIDE_SECONDS = 0.25       # 0.25초씩 밀면서 여러 번 판단
+MIN_WINDOW_FILL_RATIO = 0.8        # 구간의 80% 이상 사람이 보여야 사용
+MIN_VALID_FEATURE_RATIO = 0.6      # 숫자의 60% 이상 유효(가려지지 않음)해야 사용
+CONFIDENCE_THRESHOLD = 0.55        # 이보다 낮으면 '판단 불확실' (OK/NG에는 영향 없음)
 
 # 프레임 N장에 1장만 분석 (2 = 약 2배 빠름, 1 = 전부). 5초에 75장이라 30 Step 만들기엔 충분.
 FRAME_STRIDE = max(1, int(os.getenv("FRAME_STRIDE", "2")))
