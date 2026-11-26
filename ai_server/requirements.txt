@@ -9,3 +9,4 @@ joblib>=1.3
 # ⚠️ 팀장이 모델을 학습한 scikit-learn 버전과 맞추세요 (팀장 PC에서: python -c "import sklearn; print(sklearn.__version__)")
 scikit-learn>=1.4
 pytest>=8.0
+requests>=2.31            # client/ai_client.py 테스트용
