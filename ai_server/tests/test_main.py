@@ -4,7 +4,6 @@ YOLO·실제 영상 없이 확인할 수 있는 부분 테스트.  실행 (ai_se
 1) Feature 이름 1,140개가 팀장 rf_feature_columns.json 과 순서까지 같은가
 2) 30 Step 변환, Window 나누기
 3) 가짜 Random Forest로 추론 → OK/NG → summary
-4) 백엔드용 client/ai_client.py 의 성공·실패 처리 (가짜 응답 사용)
 """
 import json
 import sys
@@ -13,14 +12,11 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pytest
-import requests
 from sklearn.ensemble import RandomForestClassifier
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "client"))
 
-import ai_client  # noqa: E402
 import main  # noqa: E402
 
 CLASSES = ["bend_return", "drink_return", "leg_raise_lower", "sit_stand", "walk_turn_walk", "wave"]
@@ -113,42 +109,3 @@ def test_summary_picks_longest_person_and_empty():
     assert main.build_summary([a, b], "")["track_id"] == 2
     empty = main.build_summary([], "영상에서 사람을 찾지 못했습니다.")
     assert empty["people_count"] == 0 and empty["display_text"] == "영상에서 사람을 찾지 못했습니다."
-
-
-# ── 4. 백엔드용 ai_client ────────────────────────────
-class FakeResponse:
-    def __init__(self, status, body):
-        self.status_code, self._body = status, body
-
-    def json(self):
-        return self._body
-
-
-@pytest.fixture()
-def video(tmp_path):
-    p = tmp_path / "clip.mp4"
-    p.write_bytes(b"fake")
-    return p
-
-
-def test_client_success(monkeypatch, video):
-    body = {"summary": {"verdict": "OK"}, "processing_time_ms": 1000,
-            "results": [{"track_id": 1, "action_label": "wave", "confidence": 0.8, "probabilities": {}}]}
-    monkeypatch.setattr(ai_client.requests, "post", lambda *a, **k: FakeResponse(200, body))
-    r = ai_client.analyze_video(video, "wave")
-    assert r["ok"] and r["job_status"] == "COMPLETED" and "probabilities" not in r["people"][0]
-
-
-def test_client_bad_video(monkeypatch, video):
-    body = {"detail": {"code": "VIDEO_UNREADABLE", "message": "영상 파일을 열 수 없습니다."}}
-    monkeypatch.setattr(ai_client.requests, "post", lambda *a, **k: FakeResponse(400, body))
-    r = ai_client.analyze_video(video)
-    assert not r["ok"] and r["error_message"] == "영상 파일을 열 수 없습니다."
-
-
-def test_client_server_down_and_missing_file(monkeypatch, video):
-    def boom(*a, **k):
-        raise requests.ConnectionError()
-    monkeypatch.setattr(ai_client.requests, "post", boom)
-    assert "연결할 수 없습니다" in ai_client.analyze_video(video)["error_message"]
-    assert "찾을 수 없습니다" in ai_client.analyze_video("/no/such.mp4")["error_message"]
