@@ -73,7 +73,17 @@ function showCameraError() {
   if (!camera.hasAttribute("src")) return;
 
   camera.hidden = true;
-  cameraStatus.textContent = "영상을 열 수 없습니다. 카메라 영상 주소를 확인해 주세요.";
+  cameraStatus.textContent = "카메라 영상을 열 수 없습니다. 카메라 영상 주소를 확인해 주세요.";
+}
+
+// POST에서 받은 id로 Django에 저장된 분석 결과를 조회합니다.
+async function getAnalysisResult(id, signal) {
+  if (!Number.isSafeInteger(id) || id < 1) throw new Error();
+
+  const response = await fetch(`${results.dataset.api}${id}/`, { signal });
+  if (!response.ok) throw new Error();
+
+  return response.json();
 }
 
 async function startInference() {
@@ -101,7 +111,9 @@ async function startInference() {
 
     if (!response.ok) throw new Error();
 
-    const { status, verdict } = await response.json();
+    const { id } = await response.json();
+    const { status, verdict } = await getAnalysisResult(id, request.signal);
+
     if (status !== "DONE" || !["OK", "NG"].includes(verdict)) {
       throw new Error();
     }
